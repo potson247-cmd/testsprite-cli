@@ -204,15 +204,19 @@ export function serializeCredentials(file: CredentialsFile): string {
  * write replaces the file from that empty parse. The saved key is gone, and
  * `doctor` reports that none is configured.
  *
- * Sniff the BOM and decode with `TextDecoder`, which strips it (`ignoreBOM`
- * defaults to false). A file with no BOM stays UTF-8.
+ * Sniff the BOM. Little-endian is decoded as UTF-16LE. Big-endian is
+ * byte-swapped and decoded as UTF-16LE too: `utf-16be` is missing from Node
+ * builds without full ICU, and UTF-16LE is always available. `TextDecoder`
+ * strips the BOM (`ignoreBOM` defaults to false). A file with no BOM stays
+ * UTF-8.
  */
 function decodeCredentialsText(bytes: Buffer): string {
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
     return new TextDecoder('utf-16le').decode(bytes);
   }
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
-    return new TextDecoder('utf-16be').decode(bytes);
+    // Copy first: swap16 mutates, and the caller's buffer is only borrowed.
+    return new TextDecoder('utf-16le').decode(Buffer.from(bytes).swap16());
   }
   return new TextDecoder('utf-8').decode(bytes);
 }

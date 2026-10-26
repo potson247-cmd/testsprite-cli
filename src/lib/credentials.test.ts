@@ -179,6 +179,35 @@ describe('readCredentialsFile / readProfile', () => {
       prod: { apiKey: 'sk-prod' },
     });
   });
+
+  it('reads a UTF-16 BE file when utf-16be decoding is unavailable', () => {
+    // Small-ICU Node builds throw on `TextDecoder('utf-16be')`. The reader
+    // must byte-swap and use UTF-16LE, which those builds do provide.
+    const RealTextDecoder = globalThis.TextDecoder;
+    const decoder = vi.spyOn(globalThis, 'TextDecoder').mockImplementation(function (
+      label?: string,
+      options?: ConstructorParameters<typeof RealTextDecoder>[1],
+    ) {
+      if (label?.toLowerCase() === 'utf-16be') {
+        throw new RangeError('The "utf-16be" encoding is not supported');
+      }
+      return new RealTextDecoder(label, options);
+    });
+    try {
+      const text = '[default]\r\napi_key = sk-existing\r\n\r\n[prod]\r\napi_key = sk-prod\r\n';
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- `credentialsPath` lives in this suite's `mkdtempSync` temp dir, never user input; planting a BOM file is the point of the test
+      writeFileSync(credentialsPath, credentialsFileBytes('utf16be', text));
+      expect(readCredentialsFile({ path: credentialsPath })).toEqual({
+        default: { apiKey: 'sk-existing' },
+        prod: { apiKey: 'sk-prod' },
+      });
+      expect(decoder.mock.calls.some(([label]) => String(label).toLowerCase() === 'utf-16be')).toBe(
+        false,
+      );
+    } finally {
+      decoder.mockRestore();
+    }
+  });
 });
 
 /** Bytes an editor saves: a BOM plus the text in that encoding. */
