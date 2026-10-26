@@ -1314,7 +1314,7 @@ Every check reuses the same helpers the real commands use, so the report reflect
 
 ### Profiles & credentials
 
-Credentials live at `~/.testsprite/credentials` (INI-style, mode `0600`) — one section per profile. **Profile resolution order** (highest first): `--profile` flag → `TESTSPRITE_PROFILE` env → `default`. Within a profile, the `TESTSPRITE_API_KEY` / `TESTSPRITE_API_URL` env vars override the file, so CI can run without ever touching `~/.testsprite/credentials`.
+Credentials live at `~/.testsprite/credentials` (INI-style, mode `0600`) — one section per profile. The CLI writes UTF-8. A file resaved as UTF-16 with a BOM (Notepad's "Unicode" / "Unicode big endian", or Windows PowerShell 5.1 `>` / `Out-File`) is still read, and so is a UTF-8 BOM. **Profile resolution order** (highest first): `--profile` flag → `TESTSPRITE_PROFILE` env → `default`. Within a profile, the `TESTSPRITE_API_KEY` / `TESTSPRITE_API_URL` env vars override the file, so CI can run without ever touching `~/.testsprite/credentials`.
 
 ### Global flags
 
