@@ -190,10 +190,42 @@ export function serializeCredentials(file: CredentialsFile): string {
   return lines.join('\n').trimEnd() + '\n';
 }
 
+/**
+ * Decode credentials bytes, including the encodings Windows editors write.
+ *
+ * This CLI writes UTF-8 with no BOM. A UTF-8 BOM (Notepad's "UTF-8 with BOM",
+ * PowerShell 5.1 `Set-Content -Encoding utf8`) is already harmless: each line
+ * is trimmed, and U+FEFF counts as whitespace, so the section header still
+ * matches.
+ *
+ * PowerShell 5.1 `>` and `Out-File`, and Notepad's "Unicode" / "Unicode big
+ * endian", write UTF-16 with a BOM. Reading those bytes as UTF-8 produces
+ * NUL-padded text, the file parses as empty, and the next `setup` or `auth`
+ * write replaces the file from that empty parse. The saved key is gone, and
+ * `doctor` reports that none is configured.
+ *
+ * Sniff the BOM. Little-endian is decoded as UTF-16LE. Big-endian is
+ * byte-swapped and decoded as UTF-16LE too: `utf-16be` is missing from Node
+ * builds without full ICU, and UTF-16LE is always available. `TextDecoder`
+ * strips the BOM (`ignoreBOM` defaults to false). A file with no BOM stays
+ * UTF-8.
+ */
+function decodeCredentialsText(bytes: Buffer): string {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(bytes);
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    // Copy first: swap16 mutates, and the caller's buffer is only borrowed.
+    return new TextDecoder('utf-16le').decode(Buffer.from(bytes).swap16());
+  }
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
 export function readCredentialsFile(options: CredentialsOptions = {}): CredentialsFile {
   const path = resolvePath(options);
   if (!existsSync(path)) return {};
-  return parseCredentials(readFileSync(path, 'utf-8'));
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- `path` is the credentials-file path this module already operates on (default `~/.testsprite/credentials`, or the caller-supplied `CredentialsOptions.path`), not new external input; same risk profile as the other fs calls in this file.
+  return parseCredentials(decodeCredentialsText(readFileSync(path)));
 }
 
 export function readProfile(

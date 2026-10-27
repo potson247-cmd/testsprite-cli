@@ -90,6 +90,14 @@ unknown_key = ignored
 `;
     expect(parseCredentials(content)).toEqual({ default: { apiKey: 'sk-real' } });
   });
+
+  it('reads a profile whose header carries a UTF-8 BOM', () => {
+    // U+FEFF is whitespace, so trim() drops it before the section match.
+    // PowerShell 5.1 `Set-Content -Encoding utf8` writes this prefix.
+    expect(parseCredentials('\uFEFF[default]\r\napi_key = sk-bom\r\n')).toEqual({
+      default: { apiKey: 'sk-bom' },
+    });
+  });
 });
 
 describe('serializeCredentials', () => {
@@ -156,7 +164,62 @@ describe('readCredentialsFile / readProfile', () => {
     writeFileSync(credentialsPath, '[default]\napi_key = sk-x\n');
     expect(readProfile('default', { path: credentialsPath })).toEqual({ apiKey: 'sk-x' });
   });
+
+  it.each([
+    ['UTF-8 BOM', 'utf8' as const],
+    ['UTF-16 LE BOM', 'utf16le' as const],
+    ['UTF-16 BE BOM', 'utf16be' as const],
+  ])('reads a %s credentials file', (_label, encoding) => {
+    // CRLF, the line ending Notepad and Windows PowerShell 5.1 write.
+    const text = '[default]\r\napi_key = sk-existing\r\n\r\n[prod]\r\napi_key = sk-prod\r\n';
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- `credentialsPath` lives in this suite's `mkdtempSync` temp dir, never user input; planting a BOM file is the point of the test
+    writeFileSync(credentialsPath, credentialsFileBytes(encoding, text));
+    expect(readCredentialsFile({ path: credentialsPath })).toEqual({
+      default: { apiKey: 'sk-existing' },
+      prod: { apiKey: 'sk-prod' },
+    });
+  });
+
+  it('reads a UTF-16 BE file when utf-16be decoding is unavailable', () => {
+    // Small-ICU Node builds throw on `TextDecoder('utf-16be')`. The reader
+    // must byte-swap and use UTF-16LE, which those builds do provide.
+    const RealTextDecoder = globalThis.TextDecoder;
+    const decoder = vi.spyOn(globalThis, 'TextDecoder').mockImplementation(function (
+      label?: string,
+      options?: ConstructorParameters<typeof RealTextDecoder>[1],
+    ) {
+      if (label?.toLowerCase() === 'utf-16be') {
+        throw new RangeError('The "utf-16be" encoding is not supported');
+      }
+      return new RealTextDecoder(label, options);
+    });
+    try {
+      const text = '[default]\r\napi_key = sk-existing\r\n\r\n[prod]\r\napi_key = sk-prod\r\n';
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- `credentialsPath` lives in this suite's `mkdtempSync` temp dir, never user input; planting a BOM file is the point of the test
+      writeFileSync(credentialsPath, credentialsFileBytes('utf16be', text));
+      expect(readCredentialsFile({ path: credentialsPath })).toEqual({
+        default: { apiKey: 'sk-existing' },
+        prod: { apiKey: 'sk-prod' },
+      });
+      expect(decoder.mock.calls.some(([label]) => String(label).toLowerCase() === 'utf-16be')).toBe(
+        false,
+      );
+    } finally {
+      decoder.mockRestore();
+    }
+  });
 });
+
+/** Bytes an editor saves: a BOM plus the text in that encoding. */
+function credentialsFileBytes(encoding: 'utf8' | 'utf16le' | 'utf16be', text: string): Buffer {
+  if (encoding === 'utf8') {
+    return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, 'utf8')]);
+  }
+  if (encoding === 'utf16le') {
+    return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+  }
+  return Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]);
+}
 
 describe('writeProfile', () => {
   it.each(['EPERM', 'EBUSY', 'EACCES'] as const)(
@@ -415,6 +478,31 @@ describe('writeProfile', () => {
     const file = readCredentialsFile({ path: credentialsPath });
     expect(file.default).toEqual({ apiKey: 'sk-d', apiUrl: 'https://prod' });
     expect(file.dev).toEqual({ apiKey: 'sk-dev', apiUrl: 'https://dev' });
+  });
+
+  it.each([
+    ['UTF-8 BOM', 'utf8' as const],
+    ['UTF-16 LE BOM', 'utf16le' as const],
+    ['UTF-16 BE BOM', 'utf16be' as const],
+  ])('keeps existing profiles when updating a %s file', (_label, encoding) => {
+    // The next setup/auth write re-serialises whatever parse returned. A
+    // UTF-16 file used to parse as empty, so that write replaced every key.
+    // A UTF-8 BOM was already readable; this still checks the rewrite.
+    const text = '[default]\r\napi_key = sk-existing\r\n\r\n[prod]\r\napi_key = sk-prod\r\n';
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- same suite temp dir; planting a BOM file is how this test sets up the write
+    writeFileSync(credentialsPath, credentialsFileBytes(encoding, text));
+
+    writeProfile('staging', { apiKey: 'sk-staging' }, { path: credentialsPath });
+
+    expect(readCredentialsFile({ path: credentialsPath })).toEqual({
+      default: { apiKey: 'sk-existing' },
+      prod: { apiKey: 'sk-prod' },
+      staging: { apiKey: 'sk-staging' },
+    });
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- same suite temp dir; asserting the rewrite dropped the BOM
+    const saved = readFileSync(credentialsPath);
+    expect(saved.subarray(0, 2).equals(Buffer.from([0xff, 0xfe]))).toBe(false);
+    expect(saved.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))).toBe(false);
   });
 
   it('reclaims stale mutation locks and removes the lock after writing', () => {
